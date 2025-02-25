@@ -19,7 +19,7 @@ BEGIN {
     $test_name = basename($basedir);
     $fs_type   = $test_name ne "filesystem" ? $test_name : " ";
 
-    # Options: -v Verbose, -e enable udisks(8) daemon, -f filesystem type
+    # Options: -v Verbose, -e enable udisks(8) daemon, -f filesystem type, -t filesystem tag
     $v              = " ";
     $disable_udisks = 1;
     $udisks2_status = 0;
@@ -28,6 +28,9 @@ BEGIN {
     $vfat_enabled   = 0;
     $ext4_quota     = 0;
     $make_fs_opts   = "";
+    $virtiofs_enabled   = 0;
+    # This is useful for virtiofs case. User can override with option "-t".
+    $fs_tag = " ";
 
     $i = 0;
     foreach $arg (@ARGV) {
@@ -40,12 +43,20 @@ BEGIN {
         elsif ( $arg eq "-f" ) {
             $fs_type = $ARGV[ $i + 1 ];
         }
+        elsif ( $arg eq "-t" ) {
+            $fs_tag = $ARGV[ $i + 1 ];
+        }
         $i++;
     }
 
     # If NFS specified inform how to run
     if ( $fs_type eq "nfs" or $fs_type eq "nfs4" ) {
         plan skip_all => "To run NFS use 'tools/nfs.sh filesystem [-v]'";
+    }
+
+    # If fs_type is virtiofs, make sure fs_tag has been specified as well.
+    if ( $fs_type eq "virtiofs" and $fs_tag eq " ") {
+        plan skip_all => "For filesystem type virtiofs, also specify filesystem tag (-t) to mount";
     }
 
     # Get filesystem type if not specified
@@ -75,6 +86,9 @@ BEGIN {
     elsif ( $fs_type eq "vfat" ) {
         $vfat_enabled = 1;
     }
+    elsif ( $fs_type eq "virtiofs" ) {
+        $virtiofs_enabled = 1;
+    }
 
     # XFS and EXT4 support quotas internally and require special tests.
     if ( $fs_type eq "xfs" or ( $fs_type eq "ext4" and $ext4_quota ) ) {
@@ -86,6 +100,10 @@ BEGIN {
         $quota_checks = 0;
     }
     elsif ( $fs_type eq "vfat" ) {
+        $test_count   = 55;
+        $quota_checks = 0;
+    }
+    elsif ( $fs_type eq "virtiofs" ) {
         $test_count   = 55;
         $quota_checks = 0;
     }
@@ -134,6 +152,10 @@ BEGIN {
         # For tests with defcontext= options as not supported
         $test_count -= 6;
     }
+    elsif ($virtiofs_enabled) {
+        # For tests with defcontext= options as not supported
+        $test_count -= 6;
+    }
 
     # Check if watch and/or named type_transition rules configured
     ( $addit, $test_watch, $test_name_trans, $test_type_trans ) =
@@ -153,6 +175,12 @@ $private_path = abs_path($basedir) . "/mntpoint";
 # Keep a list of devices used for removal at end of test.
 $device_count = 0;
 my @device_list;
+
+# If filesystem type is virtiofs, init $dev once so that we don't have to
+# constantly re-init it after every test.
+if ($fs_type eq "virtiofs") {
+    $dev = $fs_tag;
+}
 
 if ($disable_udisks) {
     $udisks2_status = udisks2_stop();
@@ -183,8 +211,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
 
     # For XFS quota tests.
     if ( $fs_type eq "xfs" ) {
@@ -260,6 +290,9 @@ if ($test_type_trans) {
 "runcon -t test_filesystem_t $basedir/create_file -f $private_path/mp1/trans_test_file -e test_filesystem_filetranscon_t $v"
     );
     ok( $result eq 0 );
+    if ($virtiofs_enabled) {
+        system("rm -f $private_path/mp1/trans_test_file");
+    }
 }
 
 if ( not $vfat_enabled ) {
@@ -269,6 +302,9 @@ if ( not $vfat_enabled ) {
 "runcon -t test_filesystem_t $basedir/create_file_change_context -t test_filesystem_filecon_t -f $private_path/mp1/test_file $v"
       );
     ok( $result eq 0 );
+    if ($virtiofs_enabled) {
+        system("rm -f $private_path/mp1/test_file");
+    }
 }
 
 if ($test_name_trans) {
@@ -278,13 +314,18 @@ if ($test_name_trans) {
 "runcon -t test_filesystem_t $basedir/create_file -f $private_path/mp1/name_trans_test_file1 -e test_filesystem_filenametranscon1_t $v"
     );
     ok( $result eq 0 );
-
+    if ($virtiofs_enabled) {
+        system("rm -f $basedir/mntpoint/mp1/name_trans_test_file1");
+    }
     print
 "Creating 'name_trans_test_file2' and checking context changed via name-based type_transition rule\n";
     $result = system(
 "runcon -t test_filesystem_t $basedir/create_file -f $basedir/mntpoint/mp1/name_trans_test_file2 -e test_filesystem_filenametranscon2_t $v"
     );
     ok( $result eq 0 );
+    if ($virtiofs_enabled) {
+        system("rm -f $basedir/mntpoint/mp1/name_trans_test_file2");
+    }
 }
 
 if ($test_watch) {
@@ -316,8 +357,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts = "rootcontext=system_u:object_r:test_filesystem_file_t:s0";
 }
 
@@ -372,8 +415,10 @@ if ( ( $nfs_enabled and $seclabel_type ne 0 ) or not $nfs_enabled ) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts =
 "rootcontext=system_u:object_r:test_filesystem_sb_relabel_no_relabelfrom_t:s0";
     }
@@ -401,8 +446,10 @@ if ( ( $nfs_enabled and $seclabel_type eq 1 ) or not $nfs_enabled ) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts =
 "fscontext=system_u:object_r:test_filesystem_sb_relabel_no_relabelto_t:s0";
     }
@@ -430,8 +477,10 @@ if ( ( $nfs_enabled and $seclabel_type ne 0 ) or not $nfs_enabled ) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts =
 "rootcontext=system_u:object_r:test_filesystem_no_inode_no_relabelfrom_t:s0";
     }
@@ -454,8 +503,10 @@ if ( ( $nfs_enabled and $seclabel_type ne 0 ) or not $nfs_enabled ) {
 if ( not $nfs_enabled ) {
     mk_mntpoint_1($private_path);
 
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts =
 "rootcontext=system_u:object_r:test_filesystem_inode_relabel_no_associate_t:s0";
 
@@ -477,8 +528,10 @@ if ( not $nfs_enabled ) {
 #
 if ( not $nfs_enabled and not $vfat_enabled ) {
     mk_mntpoint_1($private_path);
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
 
 # Use this fscontext= to get sensible audit log entry of:
 #  "allow unlabeled_t test_filesystem_may_create_no_associate_t:filesystem associate;"
@@ -497,6 +550,9 @@ if ( not $nfs_enabled and not $vfat_enabled ) {
 "runcon -t test_filesystem_may_create_no_associate_t $basedir/create_file_change_context -t test_file_t -f $basedir/mntpoint/mp1/test_file $v 2>&1"
     );
     ok( $result >> 8 eq 13 );    # EACCES
+    if ($virtiofs_enabled) {
+        system("rm -f $basedir/mntpoint/mp1/test_file");
+    }
 
     print "Unmount filesystem from $basedir/mntpoint/mp1\n";
     $result = system(
@@ -672,8 +728,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts = "rootcontext=system_u:object_r:test_filesystem_no_mount_t:s0";
 }
 
@@ -695,8 +753,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts =
       "rootcontext=system_u:object_r:test_filesystem_no_getattr_t:s0";
 }
@@ -730,8 +790,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts =
       "rootcontext=system_u:object_r:test_filesystem_no_remount_t:s0";
 }
@@ -766,8 +828,10 @@ if ($nfs_enabled) {
     $mount_opts = $nfs_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts =
       "rootcontext=system_u:object_r:test_filesystem_no_unmount_t:s0";
 }
@@ -802,8 +866,10 @@ cleanup1( $basedir, $dev );
 #
 if ( not $nfs_enabled and not $vfat_enabled ) {
     mk_mntpoint_1($private_path);
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $mount_opts =
 "rootcontext=system_u:object_r:test_filesystem_inode_setxattr_no_associate_t:s0,fscontext=system_u:object_r:test_filesystem_inode_setxattr_no_associate_t:s0";
 
@@ -818,6 +884,10 @@ if ( not $nfs_enabled and not $vfat_enabled ) {
 "runcon -t test_filesystem_inode_setxattr_no_associate_t $basedir/create_file_change_context -t test_file_t -f $basedir/mntpoint/mp1/test_file $v 2>&1"
     );
     ok( $result >> 8 eq 13 );    # EACCES
+
+    if ($virtiofs_enabled) {
+        system("runcon -t test_filesystem_inode_setxattr_no_associate_t $basedir/unlink -f $basedir/mntpoint/mp1/test_file $v");
+    }
 
     print "Unmount filesystem from $basedir/mntpoint/mp1\n";
     $result = system(
@@ -838,8 +908,10 @@ if ($test_watch) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts = "context=system_u:object_r:test_filesystem_no_watch_t:s0";
     }
 
@@ -873,8 +945,10 @@ if ($test_watch) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts =
           "context=system_u:object_r:test_filesystem_no_watch_sb_t:s0";
     }
@@ -909,8 +983,10 @@ if ($test_watch) {
         $mount_opts = $nfs_mount_opts;
     }
     else {
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $mount_opts =
           "context=system_u:object_r:test_filesystem_no_watch_mount_t:s0";
     }
@@ -949,8 +1025,10 @@ if ($nfs_enabled) {
     $mount_inval_opts = $nfs_inval_mount_opts;
 }
 else {
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
     $mount_opts = "rootcontext=system_u:object_r:test_filesystem_file_t:s0";
     $mount_inval_opts = "fscontext=system_u:object_r:test_filesystem_file_t:s0";
 
@@ -995,8 +1073,10 @@ if ( not $nfs_enabled ) {
     #               errno EOPNOTSUPP.
     ##########################################################################
     mk_mntpoint_1($private_path);
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
 
     # Mount with xttrs to create a file with specific context.
     $context1_opts =
@@ -1030,9 +1110,11 @@ if ( not $nfs_enabled ) {
     ok( $result eq 0 );
 
     # Need to free the loop device, then get new one and attach
-    system("losetup -d $dev 2>/dev/null");
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    attach_dev( $dev, $basedir );
+    if ( not $virtiofs_enabled ) {
+        system("losetup -d $dev 2>/dev/null");
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        attach_dev( $dev, $basedir );
+    }
 
     # Mount again with no xttr support
     $context2_opts =
@@ -1060,6 +1142,10 @@ if ( not $nfs_enabled ) {
       );
     ok( $result >> 8 eq 95 );
 
+    if ($virtiofs_enabled) {
+        system("rm -f $private_path/mp1/test_file");
+    }
+
     print "Unmount filesystem from $basedir/mntpoint/mp1\n";
     $result =
       system(
@@ -1079,8 +1165,10 @@ if ( not $nfs_enabled ) {
     #               the mount operation.
     ##########################################################################
     mk_mntpoint_1($private_path);
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-    make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+    }
     $root_opts =
       "rootcontext=system_u:object_r:test_filesystem_context_file_t:s0";
 
@@ -1118,7 +1206,12 @@ if ( not $nfs_enabled ) {
     print "Removing: $dev $basedir/mntpoint $basedir/fstest\n";
     cleanup1( $basedir, $dev );
 
-    if ( not $vfat_enabled ) {
+    # With context= option, newly created file gets labeled on disk using
+    # label specified in context= (unlike ext4/xfs). That means when later
+    # same fs is mounted with defcontext=, it still gets label from disk
+    # and not as specified in defcontext. So test fails. For now disable
+    # this test on virtiofs as well.
+    if ( not $vfat_enabled and not $virtiofs_enabled) {
         #######################################################################
       # defcontext  - Set default security context for unlabeled files.
       #               This overrides the value set for unlabeled files in policy
@@ -1129,8 +1222,10 @@ if ( not $nfs_enabled ) {
       #               default.
         #######################################################################
         mk_mntpoint_1($private_path);
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        if (not $virtiofs_enabled) {
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            make_fs( $fs_type, $dev, $basedir, $make_fs_opts );
+        }
         $test_opts =
           "context=system_u:object_r:test_filesystem_context_file_t:s0";
 
@@ -1157,9 +1252,11 @@ if ( not $nfs_enabled ) {
         ok( $result eq 0 );
 
         # Need to free the loop device, then get new dev one and attach
-        system("losetup -d $dev 2>/dev/null");
-        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
-        attach_dev( $dev, $basedir );
+        if (not $virtiofs_enabled) {
+            system("losetup -d $dev 2>/dev/null");
+            ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+            attach_dev( $dev, $basedir );
+        }
 
         # Mount again with defcontext=
         $defcontext_opts =
@@ -1177,6 +1274,10 @@ if ( not $nfs_enabled ) {
 "runcon -t test_filesystem_context_t $basedir/check_file_context -f $basedir/mntpoint/mp1/test_file -e system_u:object_r:test_filesystem_filecon_t:s0 $v"
         );
         ok( $result eq 0 );
+
+        if ($virtiofs_enabled) {
+            system("rm -f $basedir/mntpoint/mp1/test_file");
+        }
 
         print "Unmount filesystem from $basedir/mntpoint/mp1\n";
         $result = system(
@@ -1197,7 +1298,9 @@ if ( not $nfs_enabled ) {
     ##########################################################################
     $fs_type = "tmpfs";
     mk_mntpoint_1($private_path);
-    ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+    if (not $virtiofs_enabled) {
+        ( $dev, $device_count ) = get_loop_dev( \@device_list, $device_count );
+    }
     $fscontext_opts =
 "fscontext=system_u:object_r:test_filesystem_fscontext_fs_t:s0,size=10M,mode=0770";
 

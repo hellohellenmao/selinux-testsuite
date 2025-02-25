@@ -256,7 +256,7 @@ typeattribute test_filesystem_inode_setxattr_no_associate_t filesystemdomain;
 
 allow test_filesystem_inode_setxattr_no_associate_t self:capability { sys_admin };
 allow test_filesystem_inode_setxattr_no_associate_t self:filesystem { mount relabelfrom relabelto unmount associate };
-allow test_filesystem_inode_setxattr_no_associate_t self:dir { mounton add_name write };
+allow test_filesystem_inode_setxattr_no_associate_t self:dir { mounton add_name write remove_name };
 allow test_filesystem_inode_setxattr_no_associate_t test_file_t:dir { mounton write remove_name rmdir };
 
 fs_mount_all_fs(test_filesystem_inode_setxattr_no_associate_t)
@@ -266,7 +266,7 @@ fs_getattr_xattr_fs(test_filesystem_inode_setxattr_no_associate_t)
 fs_associate(test_filesystem_inode_setxattr_no_associate_t)
 
 # Create test file
-allow test_filesystem_inode_setxattr_no_associate_t self:file { create relabelfrom relabelto };
+allow test_filesystem_inode_setxattr_no_associate_t self:file { create relabelfrom relabelto unlink };
 
 ################# Test process { setfscreate } #############
 type test_setfscreatecon_t;
